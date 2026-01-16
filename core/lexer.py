@@ -1,0 +1,228 @@
+import string
+from core.position import Position
+from core.tokens import Token, TokenType, Keyword, get_keyword_values, get_builtin_values
+from core.errors import IllegalCharError, ExpectedCharError
+
+DIGITS = '0123456789'
+GEORGIAN_LETTERS = ''.join(chr(i) for i in range(0x10D0, 0x10FA))
+LETTERS = string.ascii_letters + GEORGIAN_LETTERS
+LETTERS_DIGITS = LETTERS + DIGITS
+
+KEYWORDS = get_keyword_values()
+BUILTINS = get_builtin_values()
+
+class Lexer:
+    def __init__(self, fn, text):
+        self.fn = fn
+        self.text = text
+        self.pos = Position(-1, 0, -1, fn, text)
+        self.current_char = None
+        self.advance()
+
+    def advance(self):
+        self.pos.advance(self.current_char)
+        self.current_char = self.text[self.pos.idx] if self.pos.idx < len(self.text) else None
+
+    def make_tokens(self):
+        tokens = []
+
+        while self.current_char != None:
+            if self.current_char in ' \t':
+                self.advance()
+            elif self.current_char == '#' or (self.current_char == '/' and self.peek() == '/'):
+                self.skip_comment()
+            elif self.current_char in ';\n':
+                tokens.append(Token(TokenType.NEWLINE, pos_start=self.pos))
+                self.advance()
+            elif self.current_char in DIGITS:
+                tokens.append(self.make_number())
+            elif self.current_char in LETTERS:
+                tokens.append(self.make_identifier())
+            elif self.current_char == '"':
+                tokens.append(self.make_string())
+            elif self.current_char == '+':
+                tokens.append(Token(TokenType.PLUS, pos_start=self.pos))
+                self.advance()
+            elif self.current_char == '-':
+                tokens.append(self.make_minus_or_arrow())
+            elif self.current_char == '*':
+                tokens.append(Token(TokenType.MUL, pos_start=self.pos))
+                self.advance()
+            elif self.current_char == '/':
+                tokens.append(Token(TokenType.DIV, pos_start=self.pos))
+                self.advance()
+            elif self.current_char == '%':
+                tokens.append(Token(TokenType.MOD, pos_start=self.pos))
+                self.advance()
+            elif self.current_char == '^':
+                tokens.append(Token(TokenType.POW, pos_start=self.pos))
+                self.advance()
+            elif self.current_char == '(':
+                tokens.append(Token(TokenType.LPAREN, pos_start=self.pos))
+                self.advance()
+            elif self.current_char == ')':
+                tokens.append(Token(TokenType.RPAREN, pos_start=self.pos))
+                self.advance()
+            elif self.current_char == '[':
+                tokens.append(Token(TokenType.LSQUARE, pos_start=self.pos))
+                self.advance()
+            elif self.current_char == ']':
+                tokens.append(Token(TokenType.RSQUARE, pos_start=self.pos))
+                self.advance()
+            elif self.current_char == '{':
+                tokens.append(Token(TokenType.LCURLY, pos_start=self.pos))
+                self.advance()
+            elif self.current_char == '}':
+                tokens.append(Token(TokenType.RCURLY, pos_start=self.pos))
+                self.advance()
+            elif self.current_char == '!':
+                token, error = self.make_not_equals()
+                if error: return [], error
+                tokens.append(token)
+            elif self.current_char == '=':
+                tokens.append(self.make_equals())
+            elif self.current_char == '<':
+                tokens.append(self.make_less_than())
+                self.advance()
+            elif self.current_char == '>':
+                tokens.append(self.make_greater_than())
+                self.advance()
+            elif self.current_char == ',':
+                tokens.append(Token(TokenType.COMMA, pos_start=self.pos))
+                self.advance()
+            else:
+                pos_start = self.pos.copy()
+                char = self.current_char
+                self.advance()
+                return [], IllegalCharError(pos_start, self.pos, "'" + char + "'")
+
+        tokens.append(Token(TokenType.EOF, pos_start=self.pos))
+        return tokens, None
+
+    def make_number(self):
+        num_str = ''
+        dot_count = 0
+        pos_start = self.pos.copy()
+
+        while self.current_char != None and self.current_char in DIGITS + '.':
+            if self.current_char == '.':
+                if dot_count == 1: break
+                dot_count += 1
+            num_str += self.current_char
+            self.advance()
+
+        if dot_count == 0:
+            return Token(TokenType.INT, int(num_str), pos_start, self.pos)
+        else:
+            return Token(TokenType.FLOAT, float(num_str), pos_start, self.pos)
+
+    def make_string(self):
+        string = ''
+        pos_start = self.pos.copy()
+        escape_character = False
+        self.advance()
+
+        escape_characters = {
+            'n': '\n',
+            't': '\t'
+        }
+
+        while self.current_char != None and (self.current_char != '"' or escape_character):
+            if escape_character:
+                string += escape_characters.get(self.current_char, self.current_char)
+            else:
+                if self.current_char == '\\':
+                    escape_character = True
+                else:
+                    string += self.current_char
+            self.advance()
+            escape_character = False
+
+        self.advance()
+        return Token(TokenType.STRING, string, pos_start, self.pos)
+
+    def make_identifier(self):
+        id_str = ''
+        pos_start = self.pos.copy()
+
+        while self.current_char != None and self.current_char in LETTERS_DIGITS + '_':
+            id_str += self.current_char
+            self.advance()
+
+        if id_str == Keyword.TRUE.value:
+            return Token(TokenType.INT, 1, pos_start, self.pos)
+        elif id_str == Keyword.FALSE.value:
+            return Token(TokenType.INT, 0, pos_start, self.pos)
+        elif id_str in KEYWORDS:
+            return Token(TokenType.KEYWORD, id_str, pos_start, self.pos)
+        else:
+            return Token(TokenType.IDENTIFIER, id_str, pos_start, self.pos)
+    
+    def make_minus_or_arrow(self):
+        tok_type = TokenType.MINUS
+        pos_start = self.pos.copy()
+        self.advance()
+
+        if self.current_char == '>':
+            self.advance()
+            tok_type = TokenType.ARROW
+
+        return Token(tok_type, pos_start=pos_start, pos_end=self.pos)
+
+    def make_not_equals(self):
+        pos_start = self.pos.copy()
+        self.advance()
+
+        if self.current_char == '=':
+            self.advance()
+            return Token(TokenType.NE, pos_start=pos_start, pos_end=self.pos), None
+
+        self.advance()
+        return None, ExpectedCharError(pos_start, self.pos, "'=' (after '!')")
+
+    def make_equals(self):
+        tok_type = TokenType.EQ
+        pos_start = self.pos.copy()
+        self.advance()
+
+        if self.current_char == '=':
+            self.advance()
+            tok_type = TokenType.EE
+
+        return Token(tok_type, pos_start=pos_start, pos_end=self.pos)
+
+    def make_less_than(self):
+        tok_type = TokenType.LT
+        pos_start = self.pos.copy()
+        self.advance()
+
+        if self.current_char == '=':
+            self.advance()
+            tok_type = TokenType.LTE
+
+        return Token(tok_type, pos_start=pos_start, pos_end=self.pos)
+
+    def make_greater_than(self):
+        tok_type = TokenType.GT
+        pos_start = self.pos.copy()
+        self.advance()
+
+        if self.current_char == '=':
+            self.advance()
+            tok_type = TokenType.GTE
+
+        return Token(tok_type, pos_start=pos_start, pos_end=self.pos)
+
+    def skip_comment(self):
+        self.advance()
+
+        while self.current_char != '\n':
+            self.advance()
+
+        self.advance()
+
+    def peek(self):
+        pos = self.pos.idx + 1
+        if pos < len(self.text):
+            return self.text[pos]
+        return None
